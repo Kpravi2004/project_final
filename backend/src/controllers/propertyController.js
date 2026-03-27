@@ -1,5 +1,146 @@
 const db = require('../config/database');
 
+// Helper to get status ID by name
+const getStatusId = async (statusName) => {
+  const res = await db.query('SELECT id FROM property_status WHERE status = $1', [statusName]);
+  if (res.rows.length === 0) throw new Error(`Status ${statusName} not found`);
+  return res.rows[0].id;
+};
+
+// Helper to sanitize numeric fields (convert empty string to null)
+const sanitizeNumber = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const num = parseFloat(value);
+  return isNaN(num) ? null : num;
+};
+
+// POST /api/properties – create or update a draft
+exports.createOrUpdateDraft = async (req, res) => {
+  const { propertyId, ...fields } = req.body;
+  const owner_id = req.user.id;
+
+  try {
+    // If no propertyId, create a new draft
+    if (!propertyId) {
+      const draftStatusId = await getStatusId('draft');
+      const insertQuery = `
+        INSERT INTO properties (
+          owner_id, status_id, title, description, land_type_id, price, area,
+          district, taluk, village, address, survey_number, subdivision_number,
+          contact_person_name, contact_phone, contact_email, contact_address,
+          plot_shape, road_width, facing, water_connection, electricity_connection, approval_status,
+          soil_type, water_availability, irrigation_type, electricity_available, tree_type, tree_stage,
+          soil_depth, road_access_type, distance_from_highway, fencing_details,
+          approval_number, gated_community, corner_plot, landmarks
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+        RETURNING id
+      `;
+      const values = [
+        owner_id, draftStatusId,
+        fields.title, fields.description, fields.land_type_id,
+        sanitizeNumber(fields.price), sanitizeNumber(fields.area),
+        fields.district, fields.taluk, fields.village, fields.address,
+        fields.survey_number, fields.subdivision_number,
+        fields.contact_person_name, fields.contact_phone, fields.contact_email, fields.contact_address,
+        fields.plot_shape, sanitizeNumber(fields.road_width), fields.facing,
+        fields.water_connection, fields.electricity_connection, fields.approval_status,
+        fields.soil_type, fields.water_availability, fields.irrigation_type, fields.electricity_available,
+        fields.tree_type, fields.tree_stage,
+        sanitizeNumber(fields.soil_depth), fields.road_access_type, sanitizeNumber(fields.distance_from_highway),
+        fields.fencing_details,
+        fields.approval_number, fields.gated_community, fields.corner_plot, fields.landmarks
+      ];
+      const result = await db.query(insertQuery, values);
+      return res.status(201).json({ id: result.rows[0].id, message: 'Draft created' });
+    }
+
+    // Update existing draft
+    const propCheck = await db.query('SELECT status_id FROM properties WHERE id = $1 AND owner_id = $2', [propertyId, owner_id]);
+    if (propCheck.rows.length === 0) {
+      return res.status(404).json({ message: 'Property not found or not owned by you' });
+    }
+
+    const draftStatusId = await getStatusId('draft');
+    if (propCheck.rows[0].status_id !== draftStatusId) {
+      return res.status(400).json({ message: 'Property cannot be updated after submission' });
+    }
+
+    // Build dynamic update query – only update fields that are provided
+    const allowedFields = [
+      'title', 'description', 'land_type_id', 'price', 'area',
+      'district', 'taluk', 'village', 'address', 'survey_number', 'subdivision_number',
+      'contact_person_name', 'contact_phone', 'contact_email', 'contact_address',
+      'plot_shape', 'road_width', 'facing', 'water_connection', 'electricity_connection', 'approval_status',
+      'soil_type', 'water_availability', 'irrigation_type', 'electricity_available', 'tree_type', 'tree_stage',
+      'soil_depth', 'road_access_type', 'distance_from_highway', 'fencing_details',
+      'approval_number', 'gated_community', 'corner_plot', 'landmarks'
+    ];
+    const setClauses = [];
+    const values = [];
+    let paramIdx = 1;
+    for (const field of allowedFields) {
+      if (fields[field] !== undefined) {
+        let value = fields[field];
+        // Sanitize numeric fields
+        if (['price', 'area', 'road_width', 'soil_depth', 'distance_from_highway'].includes(field)) {
+          value = sanitizeNumber(value);
+        }
+        setClauses.push(`${field} = $${paramIdx}`);
+        values.push(value);
+        paramIdx++;
+      }
+    }
+    if (setClauses.length === 0) {
+      return res.status(400).json({ message: 'No fields to update' });
+    }
+    values.push(propertyId);
+    const query = `UPDATE properties SET ${setClauses.join(', ')} WHERE id = $${paramIdx}`;
+    await db.query(query, values);
+    res.json({ id: propertyId, message: 'Draft updated' });
+  } catch (err) {
+    console.error('createOrUpdateDraft error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// POST /api/properties/finalize – final submit with media
+exports.finalizeProperty = async (req, res) => {
+  const { propertyId } = req.body;
+  const owner_id = req.user.id;
+
+  try {
+    const draftStatusId = await getStatusId('draft');
+    const propRes = await db.query(
+      'SELECT * FROM properties WHERE id = $1 AND owner_id = $2 AND status_id = $3',
+      [propertyId, owner_id, draftStatusId]
+    );
+    if (propRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Draft property not found' });
+    }
+
+    // Change status to pending
+    const pendingStatusId = await getStatusId('pending');
+    await db.query('UPDATE properties SET status_id = $1 WHERE id = $2', [pendingStatusId, propertyId]);
+
+    // Save media files
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        const fileType = file.mimetype.startsWith('image/') ? 'image' : (file.mimetype.startsWith('video/') ? 'video' : 'document');
+        await db.query(
+          'INSERT INTO media (property_id, url, type, is_primary) VALUES ($1, $2, $3, $4)',
+          [propertyId, `/uploads/${file.filename}`, fileType, false]
+        );
+      }
+    }
+
+    res.json({ id: propertyId, message: 'Property submitted for verification' });
+  } catch (err) {
+    console.error('finalizeProperty error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// GET /api/properties – list approved properties (public)
 exports.getProperties = async (req, res) => {
   try {
     const { land_type_id, district, minPrice, maxPrice, minArea, maxArea, search } = req.query;
@@ -50,6 +191,7 @@ exports.getProperties = async (req, res) => {
   }
 };
 
+// GET /api/properties/:id – get single property
 exports.getPropertyById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -71,61 +213,7 @@ exports.getPropertyById = async (req, res) => {
   }
 };
 
-exports.createProperty = async (req, res) => {
-  const sanitize = (val) => (val === '' || val === undefined) ? null : val;
-
-  try {
-    const {
-      title, description, land_type_id, price, area, address, 
-      city, district, state, patta_number, survey_number, subdivision_number, village, taluk,
-      // Contact Details
-      contact_person_name, contact_phone, contact_email, contact_address,
-      // Residential
-      plot_shape, road_width, facing, water_connection, electricity_connection, approval_status,
-      approval_number, gated_community, corner_plot, landmarks,
-      // Agricultural
-      soil_type, water_availability, irrigation_type, electricity_available, tree_type, tree_stage,
-      soil_depth, road_access_type, distance_from_highway, fencing_details
-    } = req.body;
-    const owner_id = req.user.id;
-
-    const statusRes = await db.query("SELECT id FROM property_status WHERE status = 'pending'");
-    const status_id = statusRes.rows[0].id;
-
-    const query = `
-      INSERT INTO properties (
-        title, description, land_type_id, owner_id, status_id, 
-        price, area, address, city, district, state, 
-        patta_number, survey_number, subdivision_number, village, taluk,
-        contact_person_name, contact_phone, contact_email, contact_address,
-        plot_shape, road_width, facing, water_connection, electricity_connection, approval_status,
-        soil_type, water_availability, irrigation_type, electricity_available, tree_type, tree_stage,
-        soil_depth, road_access_type, distance_from_highway, fencing_details,
-        approval_number, gated_community, corner_plot, landmarks
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40
-      ) RETURNING id
-    `;
-    const values = [
-      title, description, land_type_id, owner_id, status_id, 
-      sanitize(price), sanitize(area), address, city, district, state, 
-      patta_number, survey_number, subdivision_number, village, taluk,
-      contact_person_name, contact_phone, contact_email, contact_address,
-      plot_shape, sanitize(road_width), facing, sanitize(water_connection), sanitize(electricity_connection), approval_status,
-      soil_type, sanitize(water_availability), irrigation_type, sanitize(electricity_available), tree_type, tree_stage,
-      sanitize(soil_depth), road_access_type, sanitize(distance_from_highway), fencing_details,
-      approval_number, sanitize(gated_community), sanitize(corner_plot), landmarks
-    ];
-    
-    const result = await db.query(query, values);
-    res.status(201).json({ id: result.rows[0].id, message: 'Property created and pending verification' });
-  } catch (err) {
-    console.error('createProperty error:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
+// GET /api/properties/my-properties – user's own properties
 exports.getMyProperties = async (req, res) => {
   try {
     const owner_id = req.user.id;
@@ -144,19 +232,20 @@ exports.getMyProperties = async (req, res) => {
   }
 };
 
+// POST /api/properties/:id/submit-amenities – user submits manual amenities
 exports.submitAmenities = async (req, res) => {
   const { id } = req.params;
   const { amenities } = req.body; // Expecting { counts: {...}, distances: {...} }
+  const owner_id = req.user.id;
 
   try {
     const pendingStatus = await db.query("SELECT id FROM property_status WHERE status = 'pending'");
-    
     await db.query(`
       UPDATE properties SET 
         user_provided_amenities = $1,
         status_id = $2
       WHERE id = $3 AND owner_id = $4
-    `, [JSON.stringify(amenities), pendingStatus.rows[0].id, id, req.user.id]);
+    `, [JSON.stringify(amenities), pendingStatus.rows[0].id, id, owner_id]);
 
     res.json({ message: 'Amenities submitted and property returned to pending status' });
   } catch (err) {

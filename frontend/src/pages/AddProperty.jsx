@@ -1,29 +1,110 @@
-import React, { useState } from 'react';
+// src/pages/AddProperty.jsx
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
 const AddProperty = () => {
   const [step, setStep] = useState(1);
+  const [propertyId, setPropertyId] = useState(null);
   const [formData, setFormData] = useState({
-    title: '', description: '', land_type_id: 1, price: '', area: '', 
-    address: '', city: '', district: '', state: 'Tamil Nadu', 
-    patta_number: '', survey_number: '', subdivision_number: '', village: '', taluk: '',
-    // Contact Details
+    title: '', description: '', land_type_id: 1, price: '', area: '',
+    address: '', city: '', district: '', state: 'Tamil Nadu',
+    survey_number: '', subdivision_number: '', village: '', taluk: '',
     contact_person_name: '', contact_phone: '', contact_email: '', contact_address: '',
-    // Residential fields
     plot_shape: '', road_width: '', facing: '', water_connection: false, electricity_connection: false, approval_status: '',
     approval_number: '', gated_community: false, corner_plot: false, landmarks: '',
-    // Agricultural fields
     soil_type: '', water_availability: false, irrigation_type: '', electricity_available: false, tree_type: '', tree_stage: '',
     soil_depth: '', road_access_type: '', distance_from_highway: '', fencing_details: ''
   });
   const [media, setMedia] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [loadingDraft, setLoadingDraft] = useState(false);
   const navigate = useNavigate();
+
+  // Load existing draft from localStorage on mount
+  useEffect(() => {
+    const storedId = localStorage.getItem('draftPropertyId');
+    if (storedId) {
+      setPropertyId(storedId);
+      fetchDraftData(storedId);
+    }
+  }, []);
+
+  const fetchDraftData = async (id) => {
+    setLoadingDraft(true);
+    try {
+      const res = await axios.get(`http://localhost:5000/api/properties/${id}`);
+      // Populate formData with the existing data (only draft properties are accessible)
+      setFormData(prev => ({ ...prev, ...res.data }));
+      // Note: You may need to adapt the field names – res.data contains the stored fields.
+    } catch (err) {
+      console.error('Failed to load draft', err);
+    } finally {
+      setLoadingDraft(false);
+    }
+  };
+
+  const saveCurrentPhase = async () => {
+    setSaving(true);
+    try {
+      let endpoint = 'http://localhost:5000/api/properties';
+      let payload = { ...formData };
+      if (propertyId) {
+        payload.propertyId = propertyId;
+      }
+      const res = await axios.post(endpoint, payload);
+      if (!propertyId) {
+        const newId = res.data.id;
+        setPropertyId(newId);
+        localStorage.setItem('draftPropertyId', newId);
+      }
+    } catch (err) {
+      console.error('Error saving phase', err);
+      alert('Failed to save progress. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleNext = async () => {
+    // Basic validation for the current phase (you can expand)
+    if (step === 1 && (!formData.title || !formData.description || !formData.price || !formData.area)) {
+      alert('Please fill all required fields in this phase.');
+      return;
+    }
+    if (step === 2 && (!formData.district || !formData.taluk || !formData.village || !formData.survey_number)) {
+      alert('Please fill district, taluk, village, and survey number.');
+      return;
+    }
+    if (step === 3 && (!formData.contact_person_name || !formData.contact_phone || !formData.contact_email)) {
+      alert('Please provide contact details.');
+      return;
+    }
+    if (step === 4) {
+      if (formData.land_type_id === 2) {
+        if (!formData.plot_shape || !formData.road_width || !formData.facing || !formData.approval_status) {
+          alert('Please fill plot shape, road width, facing, and approval status.');
+          return;
+        }
+      } else {
+        if (!formData.soil_type || !formData.irrigation_type) {
+          alert('Please fill soil type and irrigation type.');
+          return;
+        }
+      }
+    }
+    await saveCurrentPhase();
+    setStep(step + 1);
+  };
+
+  const handlePrev = () => {
+    setStep(step - 1);
+  };
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setFormData({ 
-      ...formData, 
+    setFormData({
+      ...formData,
       [name]: type === 'checkbox' ? checked : (name === 'land_type_id' || name === 'price' || name === 'area' || name === 'road_width' || name === 'soil_depth' || name === 'distance_from_highway' ? (value === '' ? '' : parseFloat(value)) : value)
     });
   };
@@ -44,19 +125,29 @@ const AddProperty = () => {
     setMedia(updated);
   };
 
-  const nextStep = () => setStep(step + 1);
-  const prevStep = () => setStep(step - 1);
-
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!propertyId) {
+      alert('No draft found. Please go back and save at least one phase.');
+      return;
+    }
+
+    const form = new FormData();
+    form.append('propertyId', propertyId);
+    media.forEach(m => {
+      form.append('media', m.file);
+    });
+
     try {
-      const finalData = { ...formData, media_count: media.length };
-      await axios.post('http://localhost:5000/api/properties', finalData);
-      alert('Property listed successfully and pending admin verification.');
+      await axios.post('http://localhost:5000/api/properties/finalize', form, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      alert('Property submitted for verification!');
+      localStorage.removeItem('draftPropertyId');
       navigate('/dashboard');
     } catch (err) {
       console.error(err);
-      alert('Error adding property');
+      alert('Final submission failed. Please try again.');
     }
   };
 
@@ -73,14 +164,18 @@ const AddProperty = () => {
     </div>
   );
 
+  if (loadingDraft) {
+    return <div className="min-h-screen flex items-center justify-center">Loading your draft...</div>;
+  }
+
   return (
     <div className="bg-gray-100 min-h-screen py-16 px-4">
       <div className="max-w-4xl mx-auto">
         <div className="bg-white rounded-[3rem] shadow-2xl p-10 md:p-16 border border-gray-100 overflow-hidden relative">
           <div className="absolute top-0 left-0 w-full h-2 bg-gray-100">
-             <div className="h-full bg-blue-600 transition-all duration-500" style={{ width: `${(step / 5) * 100}%` }}></div>
+            <div className="h-full bg-blue-600 transition-all duration-500" style={{ width: `${(step / 5) * 100}%` }}></div>
           </div>
-          
+
           <div className="mb-10 text-center">
             <h2 className="text-4xl font-black text-gray-900 mb-2 tracking-tight">
               {step === 1 && "Basic Details"}
@@ -89,18 +184,12 @@ const AddProperty = () => {
               {step === 4 && (formData.land_type_id === 1 ? "Agricultural Features" : "Residential Features")}
               {step === 5 && "Media Upload"}
             </h2>
-            <p className="text-gray-500 font-medium text-sm">Phase {step} of 5: {
-              step === 1 ? "Start with the fundamentals." :
-              step === 2 ? "Specify where the land is located." :
-              step === 3 ? "How should buyers reach you?" :
-              step === 4 ? "Detailed characteristics of the land." :
-              "Showcase your property visually."
-            }</p>
+            <p className="text-gray-500 font-medium text-sm">Phase {step} of 5 – your data is saved after each step</p>
           </div>
 
           {renderStepper()}
-          
-          <form onSubmit={handleSubmit} className="space-y-8">
+
+          <form onSubmit={step === 5 ? handleSubmit : (e) => e.preventDefault()}>
             {step === 1 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="col-span-1 md:col-span-2">
@@ -161,20 +250,20 @@ const AddProperty = () => {
             {step === 3 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="col-span-1 md:col-span-2">
-                   <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Person Name</label>
-                   <input name="contact_person_name" value={formData.contact_person_name} required className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-bold" placeholder="e.g., K. Rajendran" onChange={handleChange} />
+                  <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Person Name</label>
+                  <input name="contact_person_name" value={formData.contact_person_name} required className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-bold" placeholder="e.g., K. Rajendran" onChange={handleChange} />
                 </div>
                 <div>
-                   <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Phone</label>
-                   <input name="contact_phone" value={formData.contact_phone} required className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-bold" placeholder="9876543210" onChange={handleChange} />
+                  <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Phone</label>
+                  <input name="contact_phone" value={formData.contact_phone} required className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-bold" placeholder="9876543210" onChange={handleChange} />
                 </div>
                 <div>
-                   <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Email</label>
-                   <input type="email" name="contact_email" value={formData.contact_email} required className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-bold" placeholder="rajendran@example.com" onChange={handleChange} />
+                  <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Email</label>
+                  <input type="email" name="contact_email" value={formData.contact_email} required className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-bold" placeholder="rajendran@example.com" onChange={handleChange} />
                 </div>
                 <div className="col-span-1 md:col-span-2">
-                   <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Address (Optional)</label>
-                   <textarea name="contact_address" value={formData.contact_address} rows="3" className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-medium" onChange={handleChange}></textarea>
+                  <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Contact Address (Optional)</label>
+                  <textarea name="contact_address" value={formData.contact_address} rows="3" className="block w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-900 font-medium" onChange={handleChange}></textarea>
                 </div>
               </div>
             )}
@@ -308,13 +397,13 @@ const AddProperty = () => {
 
             <div className="flex gap-4 pt-8">
               {step > 1 && (
-                <button type="button" onClick={prevStep} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-900 font-black py-5 rounded-2xl uppercase tracking-widest text-xs">
+                <button type="button" onClick={handlePrev} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-900 font-black py-5 rounded-2xl uppercase tracking-widest text-xs">
                   Back
                 </button>
               )}
               {step < 5 ? (
-                <button type="button" onClick={nextStep} className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white font-black py-5 rounded-2xl shadow-2xl transition-all hover:-translate-y-1 uppercase tracking-widest text-xs">
-                  Continue &rarr;
+                <button type="button" onClick={handleNext} disabled={saving} className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white font-black py-5 rounded-2xl shadow-2xl transition-all hover:-translate-y-1 uppercase tracking-widest text-xs disabled:opacity-50">
+                  {saving ? 'Saving...' : 'Continue →'}
                 </button>
               ) : (
                 <button type="submit" className="flex-[2] bg-emerald-600 hover:bg-emerald-700 text-white font-black py-5 rounded-2xl shadow-2xl transition-all hover:-translate-y-1 uppercase tracking-widest text-xs">

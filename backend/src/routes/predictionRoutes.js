@@ -1,3 +1,4 @@
+// src/routes/predictionRoutes.js
 const express = require('express');
 const router = express.Router();
 const predictionController = require('../controllers/predictionController');
@@ -5,6 +6,6 @@ const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 
 router.post('/', auth, predictionController.predictPrice);
-router.post('/train', auth, admin, predictionController.trainModels);
+router.post('/train', auth, admin, predictionController.trainPriceModel); // or trainModels, but align with export
 
 module.exports = router;

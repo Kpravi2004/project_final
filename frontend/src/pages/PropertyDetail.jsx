@@ -1,3 +1,4 @@
+// src/pages/PropertyDetail.jsx
 import React, { useState, useEffect, useContext } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -10,6 +11,8 @@ const PropertyDetail = () => {
   const [property, setProperty] = useState(null);
   const [loading, setLoading] = useState(true);
   const [prediction, setPrediction] = useState(null);
+  const [targetYear, setTargetYear] = useState(new Date().getFullYear());
+  const [futurePrediction, setFuturePrediction] = useState(null);
 
   useEffect(() => {
     if (!user) {
@@ -27,7 +30,7 @@ const PropertyDetail = () => {
       }
     };
     fetchProp();
-  }, [id]);
+  }, [id, user, navigate]);
 
   const handlePredict = async () => {
     try {
@@ -36,6 +39,19 @@ const PropertyDetail = () => {
     } catch (err) {
       console.error(err);
       alert('Error running AI price prediction');
+    }
+  };
+
+  const handleFuturePredict = async () => {
+    try {
+      const res = await axios.post('http://localhost:5000/api/predict', {
+        property_id: id,
+        target_year: targetYear
+      });
+      setFuturePrediction(res.data);
+    } catch (err) {
+      console.error(err);
+      alert('Error fetching future prediction');
     }
   };
 
@@ -193,6 +209,7 @@ const PropertyDetail = () => {
                 </div>
               </section>
 
+              {/* Current Prediction Section */}
               <section className="bg-gray-900 p-12 rounded-[3.5rem] shadow-2xl relative overflow-hidden">
                 <div className="absolute inset-0 bg-blue-600 opacity-5 mix-blend-overlay"></div>
                 <div className="relative z-10">
@@ -238,6 +255,49 @@ const PropertyDetail = () => {
                     </div>
                   )}
                 </div>
+              </section>
+
+              {/* Future Prediction Section */}
+              <section className="bg-white border-2 border-gray-100 p-8 rounded-[3rem] shadow-sm">
+                <h3 className="text-2xl font-black text-gray-900 mb-4">Predict Future Value</h3>
+                <div className="flex flex-wrap items-end gap-6">
+                  <div className="flex-1 min-w-[200px]">
+                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Target Year</label>
+                    <input
+                      type="number"
+                      min={new Date().getFullYear()}
+                      max={2050}
+                      value={targetYear}
+                      onChange={(e) => setTargetYear(parseInt(e.target.value))}
+                      className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 font-bold"
+                    />
+                  </div>
+                  <button
+                    onClick={handleFuturePredict}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-black px-8 py-4 rounded-2xl transition-all shadow-lg active:scale-95 uppercase tracking-widest text-sm"
+                  >
+                    Predict for {targetYear}
+                  </button>
+                </div>
+                {futurePrediction && (
+                  <div className="mt-8 p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl border border-blue-100">
+                    <p className="text-sm text-gray-600 font-medium">Estimated price in <span className="font-black text-blue-800">{futurePrediction.target_year}</span>:</p>
+                    <p className="text-3xl font-black text-blue-700 mt-2">
+                      ₹{futurePrediction.predicted_price?.toLocaleString('en-IN')}
+                    </p>
+                    {futurePrediction.annual_growth_rate && (
+                      <p className="text-xs text-gray-500 mt-3 flex items-center gap-2">
+                        <span className="inline-block w-2 h-2 bg-emerald-500 rounded-full"></span>
+                        Based on annual growth rate of {(futurePrediction.annual_growth_rate * 100).toFixed(1)}%
+                      </p>
+                    )}
+                    {futurePrediction.model_used === 'credit_with_appreciation' && (
+                      <p className="text-[10px] text-gray-400 mt-2 italic">
+                        * Using credit‑based prediction + market appreciation
+                      </p>
+                    )}
+                  </div>
+                )}
               </section>
             </div>
           </div>
